@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from jax_agents.base_agent import BaseAgent
 from jax_agents.static_analysis import AnalysisResult
 from jax_agents.prompts.translation_prompts import TRANSLATION_PROMPTS
+from jax_agents.utils.config_loader import get_llm_config
 from rich.console import Console
 
 console = Console()
@@ -89,25 +90,28 @@ class TranslatorAgent(BaseAgent):
     def __init__(
         self,
         jax_ctsm_dir: Optional[Path] = None,
-        model: str = "claude-sonnet-4-20250514",
-        temperature: float = 0.0,
-        max_tokens: int = 4000,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ):
         """
         Initialize Translator Agent.
         
         Args:
             jax_ctsm_dir: Path to jax-ctsm directory (for reference patterns)
-            model: Claude model to use
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens in response
+            model: Claude model to use (defaults to config.yaml)
+            temperature: Sampling temperature (defaults to config.yaml)
+            max_tokens: Maximum tokens in response (defaults to config.yaml)
         """
+        # Load config if not provided
+        llm_config = get_llm_config()
+        
         super().__init__(
             name="Translator",
             role="Fortran to JAX code translator",
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
+            model=model or llm_config.get("model", "claude-sonnet-4-5"),
+            temperature=temperature if temperature is not None else llm_config.get("temperature", 0.0),
+            max_tokens=max_tokens or llm_config.get("max_tokens", 48000),
         )
         
         self.jax_ctsm_dir = jax_ctsm_dir
@@ -152,7 +156,7 @@ class TranslatorAgent(BaseAgent):
         response = self.query_claude(
             prompt=prompt,
             system_prompt=TRANSLATION_PROMPTS["system"],
-            max_tokens=4000,
+            max_tokens=self.max_tokens,
         )
         
         # Parse response into code files

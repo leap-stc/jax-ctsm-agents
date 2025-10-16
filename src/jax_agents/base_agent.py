@@ -46,9 +46,9 @@ class BaseAgent:
         self,
         name: str,
         role: str,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-sonnet-4-5",
         temperature: float = 0.0,
-        max_tokens: int = 4000,
+        max_tokens: int = 48000,
     ):
         """
         Initialize base agent.
@@ -91,7 +91,7 @@ class BaseAgent:
     
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10)
+        wait=wait_exponential(multiplier=1, min=10, max=60)
     )
     def query_claude(
         self,
@@ -128,33 +128,75 @@ class BaseAgent:
             # Make API call
             console.print(f"[cyan]🤖 {self.name} is thinking...[/cyan]")
             
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=max_tok,
-                temperature=temp,
-                system=sys_prompt,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            
-            # Extract response text
-            response_text = response.content[0].text
-            
-            # Update token counts
-            self.total_input_tokens += response.usage.input_tokens
-            self.total_output_tokens += response.usage.output_tokens
-            
-            # Log the response
-            self._log_interaction(f"RESPONSE_{timestamp}", response_text)
-            
-            # Log token usage
-            logger.info(
-                f"{self.name}: Used {response.usage.input_tokens} input + "
-                f"{response.usage.output_tokens} output tokens"
-            )
-            
-            return response_text
+            # Use streaming for large max_tokens to avoid timeout issues
+            # Anthropic requires streaming for requests that may take >10 minutes
+            if max_tok >= 10000:
+                console.print(f"[dim]Using streaming mode for {max_tok} max_tokens[/dim]")
+                
+                response_text = ""
+                input_tokens = 0
+                output_tokens = 0
+                
+                with self.client.messages.stream(
+                    model=self.model,
+                    max_tokens=max_tok,
+                    temperature=temp,
+                    system=sys_prompt,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
+                ) as stream:
+                    for text in stream.text_stream:
+                        response_text += text
+                    
+                    # Get final usage from stream
+                    final_message = stream.get_final_message()
+                    input_tokens = final_message.usage.input_tokens
+                    output_tokens = final_message.usage.output_tokens
+                
+                # Update token counts
+                self.total_input_tokens += input_tokens
+                self.total_output_tokens += output_tokens
+                
+                # Log the response
+                self._log_interaction(f"RESPONSE_{timestamp}", response_text)
+                
+                # Log token usage
+                logger.info(
+                    f"{self.name}: Used {input_tokens} input + "
+                    f"{output_tokens} output tokens"
+                )
+                
+                return response_text
+            else:
+                # Non-streaming for smaller requests
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=max_tok,
+                    temperature=temp,
+                    system=sys_prompt,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                
+                # Extract response text
+                response_text = response.content[0].text
+                
+                # Update token counts
+                self.total_input_tokens += response.usage.input_tokens
+                self.total_output_tokens += response.usage.output_tokens
+                
+                # Log the response
+                self._log_interaction(f"RESPONSE_{timestamp}", response_text)
+                
+                # Log token usage
+                logger.info(
+                    f"{self.name}: Used {response.usage.input_tokens} input + "
+                    f"{response.usage.output_tokens} output tokens"
+                )
+                
+                return response_text
             
         except anthropic.APIError as e:
             logger.error(f"Claude API error: {e}")

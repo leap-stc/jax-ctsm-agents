@@ -9,9 +9,11 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict
+from datetime import datetime
 
 from jax_agents.base_agent import BaseAgent
 from jax_agents.prompts.analysis_prompts import ANALYSIS_PROMPTS
+from jax_agents.utils.config_loader import get_llm_config
 from rich.console import Console
 
 console = Console()
@@ -72,6 +74,29 @@ class AnalysisResult:
         with open(output_path, 'w') as f:
             f.write(self.to_json())
         console.print(f"[green]✓ Saved analysis to {output_path}[/green]")
+    
+    @classmethod
+    def load(cls, input_path: Path) -> "AnalysisResult":
+        """Load analysis from JSON file."""
+        with open(input_path, 'r') as f:
+            data = json.load(f)
+        
+        # Reconstruct dataclasses from dictionaries
+        dependencies = DependencyInfo(**data['dependencies'])
+        data_types = [DataTypeInfo(**dt) for dt in data['data_types']]
+        subroutines = [SubroutineInfo(**sub) for sub in data['subroutines']]
+        
+        return cls(
+            module_name=data['module_name'],
+            description=data['description'],
+            dependencies=dependencies,
+            data_types=data_types,
+            parameters=data['parameters'],
+            subroutines=subroutines,
+            spatial_hierarchy=data['spatial_hierarchy'],
+            jax_translation_notes=data['jax_translation_notes'],
+            raw_analysis=data['raw_analysis'],
+        )
 
 
 class StaticAnalysisAgent(BaseAgent):
@@ -89,24 +114,27 @@ class StaticAnalysisAgent(BaseAgent):
     
     def __init__(
         self,
-        model: str = "claude-sonnet-4-20250514",
-        temperature: float = 0.0,
-        max_tokens: int = 4000,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ):
         """
         Initialize Static Analysis Agent.
         
         Args:
-            model: Claude model to use
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens in response
+            model: Claude model to use (defaults to config.yaml)
+            temperature: Sampling temperature (defaults to config.yaml)
+            max_tokens: Maximum tokens in response (defaults to config.yaml)
         """
+        # Load config if not provided
+        llm_config = get_llm_config()
+        
         super().__init__(
             name="Static Analysis",
             role="Fortran code structure analyzer",
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
+            model=model or llm_config.get("model", "claude-sonnet-4-5"),
+            temperature=temperature if temperature is not None else llm_config.get("temperature", 0.0),
+            max_tokens=max_tokens or llm_config.get("max_tokens", 48000),
         )
     
     def analyze_module(
@@ -141,7 +169,7 @@ class StaticAnalysisAgent(BaseAgent):
         response = self.query_claude(
             prompt=analysis_prompt,
             system_prompt=ANALYSIS_PROMPTS["system"],
-            max_tokens=4000,
+            max_tokens=self.max_tokens,
         )
         
         # Parse JSON response
@@ -151,7 +179,16 @@ class StaticAnalysisAgent(BaseAgent):
             analysis_data = json.loads(json_str)
         except json.JSONDecodeError as e:
             console.print(f"[red]Error parsing JSON response: {e}[/red]")
-            console.print(f"[yellow]Raw response:[/yellow]\n{response}")
+            console.print(f"[yellow]Problematic JSON (first 500 chars):[/yellow]\n{json_str[:500]}")
+            console.print(f"[yellow]JSON around error position:[/yellow]\n{json_str[max(0, e.pos-100):min(len(json_str), e.pos+100)]}")
+            
+            # Save the full response for debugging
+            error_log = self.log_dir / f"json_error_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(error_log, 'w') as f:
+                f.write(f"JSON Error: {e}\n\n")
+                f.write(f"Full Response:\n{response}\n\n")
+                f.write(f"Extracted JSON:\n{json_str}\n")
+            console.print(f"[dim]Full response saved to {error_log}[/dim]")
             raise
         
         # Optional: Extract physics details
@@ -231,10 +268,30 @@ class StaticAnalysisAgent(BaseAgent):
             fortran_code=fortran_code
         )
         
-        response = self.query_claude(prompt, system_prompt=ANALYSIS_PROMPTS["system"])
-        
-        json_str = self._extract_json(response)
-        return json.loads(json_str)
+        try:
+            response = self.query_claude(
+                prompt, 
+                system_prompt=ANALYSIS_PROMPTS["system"],
+                max_tokens=self.max_tokens
+            )
+            
+            json_str = self._extract_json(response)
+            return json.loads(json_str)
+        except json.JSONDecodeError as e:
+            console.print(f"[yellow]⚠️  Warning: Physics analysis JSON parsing failed: {e}[/yellow]")
+            console.print(f"[yellow]Skipping detailed physics extraction. Analysis will continue with structural data only.[/yellow]")
+            
+            # Save error for debugging
+            error_log = self.log_dir / f"physics_json_error_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(error_log, 'w') as f:
+                f.write(f"JSON Error: {e}\n\n")
+                f.write(f"Full Response:\n{response}\n\n")
+                if 'json_str' in locals():
+                    f.write(f"Extracted JSON:\n{json_str}\n")
+            console.print(f"[dim]Full response saved to {error_log}[/dim]")
+            
+            # Return empty physics data instead of crashing
+            return {}
     
     def _extract_json(self, response: str) -> str:
         """
@@ -250,10 +307,18 @@ class StaticAnalysisAgent(BaseAgent):
         if "```json" in response:
             start = response.find("```json") + 7
             end = response.find("```", start)
+            if end == -1:
+                # No closing ```, response was likely truncated
+                console.print("[yellow]⚠️  Warning: JSON response appears truncated (no closing ```) - increasing max_tokens may help[/yellow]")
+                return response[start:].strip()
             return response[start:end].strip()
         elif "```" in response:
             start = response.find("```") + 3
             end = response.find("```", start)
+            if end == -1:
+                # No closing ```, response was likely truncated
+                console.print("[yellow]⚠️  Warning: Response appears truncated (no closing ```) - increasing max_tokens may help[/yellow]")
+                return response[start:].strip()
             return response[start:end].strip()
         else:
             # Assume entire response is JSON

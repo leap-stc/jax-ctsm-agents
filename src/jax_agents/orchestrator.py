@@ -15,6 +15,7 @@ from jax_agents.base_agent import BaseAgent
 from jax_agents.static_analysis import StaticAnalysisAgent, AnalysisResult
 from jax_agents.translator import TranslatorAgent, TranslationResult
 from jax_agents.prompts.orchestrator_prompts import ORCHESTRATOR_PROMPTS
+from jax_agents.utils.config_loader import get_llm_config
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -88,9 +89,9 @@ class OrchestratorAgent(BaseAgent):
         self,
         ctsm_dir: Path,
         jax_ctsm_dir: Path,
-        model: str = "claude-sonnet-4-20250514",
-        temperature: float = 0.0,
-        max_tokens: int = 4000,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ):
         """
         Initialize Orchestrator Agent.
@@ -98,27 +99,31 @@ class OrchestratorAgent(BaseAgent):
         Args:
             ctsm_dir: Path to CTSM source directory
             jax_ctsm_dir: Path to jax-ctsm directory
-            model: Claude model to use
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens in response
+            model: Claude model to use (defaults to config.yaml)
+            temperature: Sampling temperature (defaults to config.yaml)
+            max_tokens: Maximum tokens in response (defaults to config.yaml)
         """
+        # Load config if not provided
+        llm_config = get_llm_config()
+        
         super().__init__(
             name="Orchestrator",
             role="Conversion workflow coordinator",
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
+            model=model or llm_config.get("model", "claude-sonnet-4-5"),
+            temperature=temperature if temperature is not None else llm_config.get("temperature", 0.0),
+            max_tokens=max_tokens or llm_config.get("max_tokens", 48000),
         )
         
         self.ctsm_dir = Path(ctsm_dir)
         self.jax_ctsm_dir = Path(jax_ctsm_dir)
         
-        # Initialize sub-agents
-        self.analyzer = StaticAnalysisAgent(model=model, temperature=temperature)
+        # Initialize sub-agents (they will use config too)
+        self.analyzer = StaticAnalysisAgent(model=model, temperature=temperature, max_tokens=max_tokens)
         self.translator = TranslatorAgent(
             jax_ctsm_dir=jax_ctsm_dir,
             model=model,
             temperature=temperature,
+            max_tokens=max_tokens,
         )
         
         # Track converted modules
@@ -320,7 +325,7 @@ class OrchestratorAgent(BaseAgent):
         response = self.query_claude(
             prompt=prompt,
             system_prompt=ORCHESTRATOR_PROMPTS["system"],
-            max_tokens=4000,
+            max_tokens=self.max_tokens,
         )
         
         return response

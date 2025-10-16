@@ -140,9 +140,9 @@ The agents can be configured via `config.yaml`:
 
 ```yaml
 # Agent configuration
-claude_model: "claude-sonnet-4-20250514"
+model: "claude-sonnet-4-5"  # Claude 4.5 Sonnet
 temperature: 0.0  # Deterministic for code generation
-max_tokens: 4000
+max_tokens: 48000
 
 # Conversion settings
 output_format:

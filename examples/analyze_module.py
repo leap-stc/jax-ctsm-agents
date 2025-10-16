@@ -15,10 +15,10 @@ console = Console()
 
 
 def main():
-    """Analyze CNPhenologyMod.F90 to understand its structure."""
+    """Analyze CNMRespMod.F90 (Maintenance Respiration) to understand its structure."""
     
     # Setup
-    fortran_file = Path("/burg-archive/home/mck2199/CTSM/src/biogeochem/CNPhenologyMod.F90")
+    fortran_file = Path("/burg-archive/home/mck2199/CTSM/src/biogeochem/CNMRespMod.F90")
     
     console.print("[bold cyan]Static Analysis Example[/bold cyan]\n")
     console.print(f"[bold]Analyzing:[/bold] {fortran_file.name}\n")
@@ -27,7 +27,9 @@ def main():
     analyzer = StaticAnalysisAgent()
     
     # Perform analysis
-    analysis = analyzer.analyze_module(fortran_file, extract_physics=True)
+    # Note: extract_physics=False by default to avoid token limits
+    # Set to True for detailed physics extraction (requires more tokens)
+    analysis = analyzer.analyze_module(fortran_file, extract_physics=False)
     
     # Display results
     console.print("\n[bold green]Analysis Complete![/bold green]\n")
@@ -58,11 +60,12 @@ def main():
         console.print(f"  {i}. {challenge}")
     console.print()
     
-    # Save analysis
+    # Save analysis for later use
     output_file = Path("analysis_result.json")
     analysis.save(output_file)
     
-    console.print(f"[dim]Full analysis saved to {output_file}[/dim]")
+    console.print(f"\n[green]✓ Full analysis saved to {output_file}[/green]")
+    console.print(f"[dim]  Use this file with: python examples/translate_from_analysis.py[/dim]")
     
     # Display cost
     cost = analyzer.get_cost_estimate()

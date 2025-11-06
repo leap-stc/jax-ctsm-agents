@@ -12,7 +12,8 @@ import json
 
 from jax_agents.base_agent import BaseAgent
 from jax_agents.static_analysis import AnalysisResult
-from jax_agents.prompts.translation_prompts import TRANSLATION_PROMPTS
+# from jax_agents.prompts.translation_prompts import TRANSLATION_PROMPTS
+from jax_agents.prompts.translation_prompts_v2 import TRANSLATION_PROMPTS
 from jax_agents.utils.config_loader import get_llm_config
 from rich.console import Console
 

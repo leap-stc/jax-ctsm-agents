@@ -25,14 +25,21 @@ You generate production-quality code that matches the existing jax-ctsm patterns
 
     "translate_module": """Translate the following Fortran module to JAX, following the patterns from the existing jax-ctsm implementation.
 
-FORTRAN MODULE:
+MODULE: {module_name}
+
+FORTRAN SOURCE CODE:
 ```fortran
 {fortran_code}
 ```
 
-STATIC ANALYSIS:
+MODULE ANALYSIS (from analysis_results.json):
 ```json
-{analysis}
+{module_info}
+```
+
+ENHANCED CONTEXT (dependencies, translation units, complexity):
+```json
+{enhanced_context}
 ```
 
 REFERENCE JAX PATTERN (from existing jax-ctsm):
@@ -40,38 +47,66 @@ REFERENCE JAX PATTERN (from existing jax-ctsm):
 {reference_pattern}
 ```
 
+IMPORTANT TRANSLATION CONTEXT:
+The enhanced context above includes:
+- **Dependencies**: What modules this module uses and what modules use it
+- **Translation Units**: Breakdown of this module into translatable units with complexity scores
+- **Complexity Info**: Effort estimates and whether large functions have been split
+- **Translation Units Guide**: Each unit has:
+  - unit_type: "module" (module header), "root" (complete function), "inner" (part of split function)
+  - line_start/line_end: Exact location in source file
+  - complexity_score: Relative difficulty (higher = more complex)
+  - estimated_effort: "low", "medium", or "high"
+  - parent_id/child_ids: For functions split into multiple units
+
+Pay special attention to:
+1. Functions marked as "inner" units - these are parts of larger functions that were split for easier translation
+2. High complexity scores - may need extra care with loop vectorization or conditional handling
+3. Dependencies - ensure you understand what external modules/types are being used
+
 Generate the JAX translation following these requirements:
 
 1. **Module Structure**:
    - Create a Python module with clear separation of concerns
    - Use NamedTuples for all data structures
    - Create a separate params file if needed
+   - Follow the translation unit breakdown for organization
 
 2. **Data Structures**:
    - Map Fortran derived types to Python NamedTuples
    - Use jnp.ndarray for all arrays
    - Document array shapes in comments: # [n_patches, n_layers]
+   - Pay attention to types defined in dependencies
 
 3. **Functions**:
    - Pure functions only (no mutations)
    - Full type hints: def func(arg: Type) -> ReturnType:
-   - Google-style docstrings with Fortran reference
+   - Google-style docstrings with Fortran reference (file + line numbers from translation units)
    - Preserve exact physics equations
+   - For "inner" units, note the parent function in docstring
 
 4. **JAX Patterns**:
    - Convert do loops to vectorized jnp operations
    - Convert if statements to jnp.where for JIT compatibility
    - Use index arrays for spatial hierarchy (not nested objects)
+   - Apply vmap for vectorization where appropriate
 
 5. **Documentation**:
-   - Reference original Fortran file and line numbers
+   - Reference original Fortran file and exact line numbers from translation units
    - Explain any non-obvious translations
    - Add usage examples in docstrings
+   - Note complexity considerations for high-complexity units
+
+6. **Translation Unit Handling**:
+   - If the module has split functions (has_split_functions=true), handle inner units carefully
+   - Maintain logical flow even when functions are split
+   - Consider refactoring split functions into helper functions
 
 Please provide:
 1. Main physics module (.py file)
-2. Parameters file if needed
+2. Parameters file if needed (check module_info for parameter definitions)
 3. Brief explanation of key translation decisions
+4. Notes on handling any high-complexity or split units
 
 Generate complete, production-ready code.""",
 

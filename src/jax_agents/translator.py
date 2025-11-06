@@ -2,11 +2,13 @@
 Translator Agent for converting Fortran to JAX.
 
 This agent translates Fortran CTSM code to JAX following established patterns.
+Uses comprehensive static analysis results and translation unit breakdowns.
 """
 
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
+import json
 
 from jax_agents.base_agent import BaseAgent
 from jax_agents.static_analysis import AnalysisResult
@@ -89,7 +91,10 @@ class TranslatorAgent(BaseAgent):
     
     def __init__(
         self,
+        analysis_results_path: Optional[Path] = None,
+        translation_units_path: Optional[Path] = None,
         jax_ctsm_dir: Optional[Path] = None,
+        fortran_root: Optional[Path] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -98,7 +103,10 @@ class TranslatorAgent(BaseAgent):
         Initialize Translator Agent.
         
         Args:
+            analysis_results_path: Path to analysis_results.json from static analyzer
+            translation_units_path: Path to translation_units.json from static analyzer
             jax_ctsm_dir: Path to jax-ctsm directory (for reference patterns)
+            fortran_root: Path to Fortran source root (overrides paths in JSON)
             model: Claude model to use (defaults to config.yaml)
             temperature: Sampling temperature (defaults to config.yaml)
             max_tokens: Maximum tokens in response (defaults to config.yaml)
@@ -115,38 +123,63 @@ class TranslatorAgent(BaseAgent):
         )
         
         self.jax_ctsm_dir = jax_ctsm_dir
+        self.fortran_root = fortran_root
         self.reference_patterns = self._load_reference_patterns()
+        
+        # Load static analysis results
+        self.analysis_results = self._load_json(analysis_results_path) if analysis_results_path else None
+        self.translation_units = self._load_json(translation_units_path) if translation_units_path else None
     
     def translate_module(
         self,
-        fortran_file: Path,
-        analysis: AnalysisResult,
+        module_name: str,
+        fortran_file: Optional[Path] = None,
+        analysis: Optional[AnalysisResult] = None,
         output_dir: Optional[Path] = None,
     ) -> TranslationResult:
         """
         Translate a complete Fortran module to JAX.
         
         Args:
-            fortran_file: Path to Fortran source file
-            analysis: Static analysis result
+            module_name: Name of the module to translate (must match name in JSON files)
+            fortran_file: Optional path to Fortran source file (will extract from JSON if not provided)
+            analysis: Optional static analysis result (legacy, use JSON files instead)
             output_dir: Optional directory to save output
             
         Returns:
             TranslationResult with generated code
         """
-        console.print(f"\n[bold cyan]🔄 Translating {fortran_file.name} to JAX[/bold cyan]")
+        console.print(f"\n[bold cyan]🔄 Translating {module_name} to JAX[/bold cyan]")
+        
+        # Extract module-specific information from JSON files
+        module_info = self._extract_module_info(module_name)
+        
+        if not module_info:
+            raise ValueError(f"Module '{module_name}' not found in analysis results")
         
         # Read Fortran source
-        with open(fortran_file, 'r') as f:
+        if fortran_file:
+            fortran_path = fortran_file
+        else:
+            fortran_path = self._remap_fortran_path(module_info['file_path'])
+        
+        console.print(f"[dim]Reading from: {fortran_path}[/dim]")
+        
+        with open(fortran_path, 'r') as f:
             fortran_code = f.read()
         
         # Get reference pattern
         reference_pattern = self._get_reference_pattern()
         
-        # Build translation prompt
+        # Build enhanced context from JSON files
+        enhanced_context = self._build_enhanced_context(module_name, module_info)
+        
+        # Build translation prompt with enhanced information
         prompt = TRANSLATION_PROMPTS["translate_module"].format(
+            module_name=module_name,
             fortran_code=fortran_code,
-            analysis=analysis.to_json(),
+            module_info=json.dumps(module_info, indent=2),
+            enhanced_context=json.dumps(enhanced_context, indent=2),
             reference_pattern=reference_pattern,
         )
         
@@ -160,7 +193,7 @@ class TranslatorAgent(BaseAgent):
         )
         
         # Parse response into code files
-        result = self._parse_translation_response(response, analysis.module_name)
+        result = self._parse_translation_response(response, module_name)
         
         console.print(f"[green]✓ Translation complete![/green]")
         
@@ -295,6 +328,133 @@ class TranslatorAgent(BaseAgent):
         )
         
         return self._extract_code(response)
+    
+    def _remap_fortran_path(self, original_path: str) -> Path:
+        """
+        Remap Fortran file path to correct location.
+        
+        If fortran_root is provided, replaces the original root with it.
+        
+        Args:
+            original_path: Original path from JSON (e.g., /home/al4385/CLM-ml_v1/...)
+            
+        Returns:
+            Remapped path
+        """
+        if not self.fortran_root:
+            return Path(original_path)
+        
+        # Extract relative path from CLM-ml_v1 onwards
+        path_obj = Path(original_path)
+        parts = path_obj.parts
+        
+        # Find CLM-ml_v1 or similar project root
+        for i, part in enumerate(parts):
+            if 'CLM' in part or 'clm' in part:
+                relative_parts = parts[i+1:]  # Skip the CLM-ml_v1 part
+                return self.fortran_root / Path(*relative_parts)
+        
+        # If no CLM found, just use the filename
+        return self.fortran_root / path_obj.name
+    
+    def _load_json(self, json_path: Path) -> Dict[str, Any]:
+        """
+        Load JSON file.
+        
+        Args:
+            json_path: Path to JSON file
+            
+        Returns:
+            Parsed JSON data
+        """
+        with open(json_path, 'r') as f:
+            return json.load(f)
+    
+    def _extract_module_info(self, module_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Extract module-specific information from analysis results.
+        
+        Args:
+            module_name: Name of module to extract (case-insensitive)
+            
+        Returns:
+            Dictionary with module information or None if not found
+        """
+        if not self.analysis_results:
+            return None
+        
+        # Search in parsing.modules (case-insensitive)
+        modules = self.analysis_results.get("parsing", {}).get("modules", {})
+        for mod_name, mod_data in modules.items():
+            if mod_name.lower() == module_name.lower():
+                return mod_data
+        
+        return None
+    
+    def _build_enhanced_context(self, module_name: str, module_info: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Build enhanced context for translation from JSON files.
+        
+        Args:
+            module_name: Name of module being translated
+            module_info: Module information from analysis_results.json
+            
+        Returns:
+            Dictionary with enhanced context including dependencies, translation units, etc.
+        """
+        context = {
+            "module_name": module_name,
+            "dependencies": {},
+            "translation_units": [],
+            "complexity_info": {},
+            "recommendations": [],
+        }
+        
+        # Extract dependencies
+        if self.analysis_results:
+            deps = self.analysis_results.get("parsing", {}).get("dependencies", {})
+            if module_name in deps:
+                context["dependencies"]["uses"] = deps[module_name]
+            
+            # Find who uses this module
+            context["dependencies"]["used_by"] = [
+                mod for mod, mod_deps in deps.items() 
+                if module_name in mod_deps
+            ]
+        
+        # Extract translation units for this module
+        if self.translation_units:
+            units = self.translation_units.get("translation_units", [])
+            module_units = [
+                unit for unit in units 
+                if unit.get("module_name", "").lower() == module_name.lower()
+            ]
+            context["translation_units"] = module_units
+            
+            # Calculate complexity summary
+            if module_units:
+                complexities = [u.get("complexity_score", 0) for u in module_units]
+                efforts = [u.get("estimated_effort", "unknown") for u in module_units]
+                context["complexity_info"] = {
+                    "total_units": len(module_units),
+                    "avg_complexity": sum(complexities) / len(complexities) if complexities else 0,
+                    "max_complexity": max(complexities) if complexities else 0,
+                    "effort_breakdown": {
+                        "low": efforts.count("low"),
+                        "medium": efforts.count("medium"),
+                        "high": efforts.count("high"),
+                    },
+                    "has_split_functions": any(u.get("unit_type") == "inner" for u in module_units),
+                }
+        
+        # Extract any module-specific recommendations
+        if self.analysis_results:
+            recs = self.analysis_results.get("recommendations", {})
+            context["recommendations"] = [
+                rec for rec in recs.get("translation_strategy", [])
+            ]
+        
+        return context
     
     def _load_reference_patterns(self) -> Dict[str, str]:
         """

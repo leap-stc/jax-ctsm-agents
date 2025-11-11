@@ -1,0 +1,11 @@
+WARNING:2025-11-10 22:59:29,284:jax._src.xla_bridge:850: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.
+Running intentionally failing tests...
+================================================================================
+✓ test_thermal_conductivity_basic FAILED as expected: First column should not be zero!
+✓ test_thermal_conductivity_first_column FAILED as expected: First column values should be non-zero!
+✓ test_heat_capacity_basic FAILED as expected: First column should not be zero!
+✓ test_heat_capacity_first_column FAILED as expected: First element should be non-zero, got 0.0
+✗ test_thermal_conductivity_correct_formula PASSED (should have failed!)
+================================================================================
+
+All tests failed as expected! Ready for repair agent testing.

@@ -39,12 +39,7 @@ ENV/
 logs/
 *.log
 
-# Output
-output/
-*.json
-*.md
-!README.md
-!*.example
+
 
 # Testing
 .pytest_cache/

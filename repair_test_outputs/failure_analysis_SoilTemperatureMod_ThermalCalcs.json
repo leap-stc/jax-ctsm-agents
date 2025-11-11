@@ -1,0 +1,48 @@
+{
+  "failed_tests": [
+    "test_thermal_conductivity_basic",
+    "test_thermal_conductivity_first_column",
+    "test_heat_capacity_basic",
+    "test_heat_capacity_first_column"
+  ],
+  "error_summary": "Multiple critical indexing and formula errors causing first column/row to be zero and incorrect thermal conductivity calculations. Four tests failed due to off-by-one errors in loop ranges and incorrect formula implementation.",
+  "root_causes": [
+    {
+      "issue": "Off-by-one error in thermal conductivity loop - skips first column",
+      "location": "calculate_soil_thermal_conductivity, line 35: 'for i in range(1, n_columns)'",
+      "severity": "critical",
+      "explanation": "The Fortran code uses 1-based indexing with 'do i = 1, n_columns' which processes ALL columns from index 1 to n_columns (inclusive). The Python translation incorrectly uses 'range(1, n_columns)' which skips index 0 (the first column in 0-based Python). This means the first column remains all zeros in the output array. The correct Python translation should be 'range(n_columns)' to process indices 0 through n_columns-1."
+    },
+    {
+      "issue": "Incorrect array indexing in saturation calculation",
+      "location": "calculate_soil_thermal_conductivity, line 39: 'watsat[i-1, j]'",
+      "severity": "critical",
+      "explanation": "The code uses 'watsat[i-1, j]' instead of 'watsat[i, j]'. This is a misguided attempt to compensate for Fortran's 1-based indexing, but since the loop already starts at i=1 (incorrectly), this causes an off-by-one error. When i=1, it accesses watsat[0, j], and when i=n_columns-1, it accesses watsat[n_columns-2, j], never accessing the last row. The correct fix is to use 'watsat[i, j]' with the loop starting at 0."
+    },
+    {
+      "issue": "Incorrect thermal conductivity formula",
+      "location": "calculate_soil_thermal_conductivity, line 42: 'tkdry[i, j] + sat * tkmg[i, j]'",
+      "severity": "critical",
+      "explanation": "The Fortran code implements the Johansen (1975) model: 'tk(i,j) = tkdry(i,j) + sat * (tkmg(i,j) - tkdry(i,j))'. This represents: dry conductivity + saturation-weighted difference between saturated and dry conductivity. The Python code incorrectly uses 'tkdry[i, j] + sat * tkmg[i, j]', which is mathematically wrong. When sat=0 (dry), it should equal tkdry, which it does. But when sat=1 (saturated), it should equal tkmg, but instead gives tkdry + tkmg. The correct formula is: 'tkdry[i, j] + sat * (tkmg[i, j] - tkdry[i, j])'."
+    },
+    {
+      "issue": "Off-by-one error in heat capacity loop - skips first column",
+      "location": "calculate_heat_capacity, line 73: 'for i in range(1, n_columns)'",
+      "severity": "critical",
+      "explanation": "Same issue as in thermal conductivity function. The Fortran 'do i = 1, n_columns' processes all columns, but Python 'range(1, n_columns)' skips the first column (index 0). This causes the entire first column of the output to remain zero. Should be 'range(n_columns)'."
+    },
+    {
+      "issue": "Missing layer thickness multiplication in soil heat capacity",
+      "location": "calculate_heat_capacity, line 76: 'cv_soil = csol[i, j]'",
+      "severity": "critical",
+      "explanation": "The Fortran code calculates 'cv_soil = csol(i,j) * dz(i,j)' where csol is volumetric heat capacity [J/m\u00b3/K] and dz is layer thickness [m], giving cv_soil in [J/m\u00b2/K]. The Python code omits the 'dz' multiplication, using only 'csol[i, j]'. This results in wrong units and incorrect magnitude. The correct formula is: 'cv_soil = csol[i, j] * dz[i, j]'."
+    }
+  ],
+  "required_fixes": [
+    "Fix loop range in calculate_soil_thermal_conductivity: change 'range(1, n_columns)' to 'range(n_columns)'",
+    "Fix array indexing in calculate_soil_thermal_conductivity: change 'watsat[i-1, j]' to 'watsat[i, j]'",
+    "Fix thermal conductivity formula: change 'tkdry[i, j] + sat * tkmg[i, j]' to 'tkdry[i, j] + sat * (tkmg[i, j] - tkdry[i, j])'",
+    "Fix loop range in calculate_heat_capacity: change 'range(1, n_columns)' to 'range(n_columns)'",
+    "Fix soil heat capacity calculation: change 'cv_soil = csol[i, j]' to 'cv_soil = csol[i, j] * dz[i, j]'"
+  ]
+}

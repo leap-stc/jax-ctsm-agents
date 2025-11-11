@@ -1,9 +1,12 @@
-from jax_ctsm.config import create_run_config, log_message
+# In other modules
+from jax_ctsm.control.clm_varctl import ClmVarCtl, create_default_clm_varctl
 
-# Create configuration
-config = create_run_config(log_level="DEBUG", verbose=True)
-
-# Use in functions
-def my_function(config: RunControlConfig):
-    log_message("Processing data", config, "INFO")
-    # ... do work ...
+def some_clm_function(
+    state: SomeState,
+    config: ClmVarCtl,
+) -> SomeOutput:
+    """Function that needs access to control variables."""
+    if config.iulog >= 0:
+        # Logging logic
+        pass
+    # ... rest of function

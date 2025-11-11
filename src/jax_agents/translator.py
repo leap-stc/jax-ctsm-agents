@@ -139,7 +139,7 @@ class TranslatorAgent(BaseAgent):
         output_dir: Optional[Path] = None,
     ) -> TranslationResult:
         """
-        Translate a complete Fortran module to JAX.
+        Translate a complete Fortran module to JAX by processing each translation unit.
         
         Args:
             module_name: Name of the module to translate (must match name in JSON files)
@@ -169,32 +169,49 @@ class TranslatorAgent(BaseAgent):
         with open(fortran_path, 'r') as f:
             fortran_code = f.read()
         
+        fortran_lines = fortran_code.split('\n')
+        
         # Get reference pattern
         reference_pattern = self._get_reference_pattern()
         
-        # Build enhanced context from JSON files
-        enhanced_context = self._build_enhanced_context(module_name, module_info)
+        # Get translation units for this module
+        module_units = self._get_module_units(module_name)
         
-        # Build translation prompt with enhanced information
-        prompt = TRANSLATION_PROMPTS["translate_module"].format(
+        if not module_units:
+            console.print("[yellow]⚠ No translation units found, falling back to full module translation[/yellow]")
+            return self._translate_module_legacy(module_name, fortran_code, module_info, reference_pattern, output_dir)
+        
+        console.print(f"[cyan]Found {len(module_units)} translation units[/cyan]")
+        
+        # Translate each unit iteratively
+        translated_units = []
+        for i, unit in enumerate(module_units, 1):
+            console.print(f"[cyan]Translating unit {i}/{len(module_units)}: {unit.get('id', 'unknown')} ({unit.get('unit_type', 'unknown')})[/cyan]")
+            
+            translated_code = self._translate_unit(
+                module_name=module_name,
+                unit=unit,
+                fortran_lines=fortran_lines,
+                module_info=module_info,
+                reference_pattern=reference_pattern,
+                previously_translated=translated_units,
+            )
+            
+            translated_units.append({
+                "unit_id": unit.get("id", "unknown"),
+                "unit_type": unit.get("unit_type", "unknown"),
+                "translated_code": translated_code,
+                "original_lines": f"{unit.get('line_start', 0)}-{unit.get('line_end', 0)}",
+            })
+        
+        # Assemble all units into final module
+        console.print("[cyan]Assembling complete module...[/cyan]")
+        result = self._assemble_module(
             module_name=module_name,
-            fortran_code=fortran_code,
-            module_info=json.dumps(module_info, indent=2),
-            enhanced_context=json.dumps(enhanced_context, indent=2),
+            translated_units=translated_units,
+            module_info=module_info,
             reference_pattern=reference_pattern,
         )
-        
-        console.print("[cyan]Generating JAX translation...[/cyan]")
-        
-        # Query Claude for translation
-        response = self.query_claude(
-            prompt=prompt,
-            system_prompt=TRANSLATION_PROMPTS["system"],
-            max_tokens=self.max_tokens,
-        )
-        
-        # Parse response into code files
-        result = self._parse_translation_response(response, module_name)
         
         console.print(f"[green]✓ Translation complete![/green]")
         
@@ -329,6 +346,202 @@ class TranslatorAgent(BaseAgent):
         )
         
         return self._extract_code(response)
+    
+    def _get_module_units(self, module_name: str) -> List[Dict[str, Any]]:
+        """
+        Get translation units for a specific module.
+        
+        Args:
+            module_name: Module name (case-insensitive)
+            
+        Returns:
+            List of translation units for the module
+        """
+        if not self.translation_units:
+            return []
+        
+        units = self.translation_units.get("translation_units", [])
+        module_units = [
+            unit for unit in units 
+            if unit.get("module_name", "").lower() == module_name.lower()
+        ]
+        
+        # Sort by line_start to process in order
+        module_units.sort(key=lambda u: u.get("line_start", 0))
+        
+        return module_units
+    
+    def _translate_unit(
+        self,
+        module_name: str,
+        unit: Dict[str, Any],
+        fortran_lines: List[str],
+        module_info: Dict[str, Any],
+        reference_pattern: str,
+        previously_translated: List[Dict[str, Any]],
+    ) -> str:
+        """
+        Translate a single translation unit.
+        
+        Args:
+            module_name: Module name
+            unit: Translation unit metadata
+            fortran_lines: Full Fortran source as list of lines
+            module_info: Module information from analysis
+            reference_pattern: Reference JAX pattern
+            previously_translated: Previously translated units for context
+            
+        Returns:
+            Translated code for this unit
+        """
+        # Extract Fortran code for this unit
+        line_start = unit.get("line_start", 1) - 1  # Convert to 0-indexed
+        line_end = unit.get("line_end", len(fortran_lines))
+        unit_fortran = '\n'.join(fortran_lines[line_start:line_end])
+        
+        # Build context
+        context = {
+            "module_dependencies": self._get_module_dependencies(module_name),
+            "previously_translated": [
+                {
+                    "unit_id": u["unit_id"],
+                    "unit_type": u["unit_type"],
+                    "code_snippet": u["translated_code"][:200] + "..." if len(u["translated_code"]) > 200 else u["translated_code"],
+                }
+                for u in previously_translated
+            ],
+        }
+        
+        # Build prompt
+        prompt = TRANSLATION_PROMPTS["translate_unit"].format(
+            module_name=module_name,
+            unit_id=unit.get("id", "unknown"),
+            unit_type=unit.get("unit_type", "unknown"),
+            line_start=unit.get("line_start", 1),
+            line_end=unit.get("line_end", len(fortran_lines)),
+            fortran_code=unit_fortran,
+            unit_info=json.dumps(unit, indent=2),
+            context=json.dumps(context, indent=2),
+            reference_pattern=reference_pattern,
+            parent_id=unit.get("parent_id", "N/A"),
+        )
+        
+        # Query LLM
+        response = self.query_claude(
+            prompt=prompt,
+            system_prompt=TRANSLATION_PROMPTS["system"],
+            max_tokens=self.max_tokens,
+        )
+        
+        return self._extract_code(response)
+    
+    def _assemble_module(
+        self,
+        module_name: str,
+        translated_units: List[Dict[str, Any]],
+        module_info: Dict[str, Any],
+        reference_pattern: str,
+    ) -> TranslationResult:
+        """
+        Assemble translated units into complete module.
+        
+        Args:
+            module_name: Module name
+            translated_units: List of translated units
+            module_info: Module information
+            reference_pattern: Reference pattern
+            
+        Returns:
+            TranslationResult with assembled code
+        """
+        # Build assembly prompt
+        prompt = TRANSLATION_PROMPTS["assemble_module"].format(
+            module_name=module_name,
+            translated_units=json.dumps(translated_units, indent=2),
+            module_info=json.dumps(module_info, indent=2),
+            reference_pattern=reference_pattern,
+        )
+        
+        # Query LLM for assembly
+        response = self.query_claude(
+            prompt=prompt,
+            system_prompt=TRANSLATION_PROMPTS["system"],
+            max_tokens=self.max_tokens,
+        )
+        
+        # Parse response
+        return self._parse_translation_response(response, module_name)
+    
+    def _translate_module_legacy(
+        self,
+        module_name: str,
+        fortran_code: str,
+        module_info: Dict[str, Any],
+        reference_pattern: str,
+        output_dir: Optional[Path] = None,
+    ) -> TranslationResult:
+        """
+        Legacy translation method (translate full module at once).
+        Used as fallback when no translation units available.
+        
+        Args:
+            module_name: Module name
+            fortran_code: Full Fortran source
+            module_info: Module information
+            reference_pattern: Reference pattern
+            output_dir: Optional output directory
+            
+        Returns:
+            TranslationResult
+        """
+        # Build enhanced context
+        enhanced_context = self._build_enhanced_context(module_name, module_info)
+        
+        # Build translation prompt
+        prompt = TRANSLATION_PROMPTS["translate_module"].format(
+            module_name=module_name,
+            fortran_code=fortran_code,
+            module_info=json.dumps(module_info, indent=2),
+            enhanced_context=json.dumps(enhanced_context, indent=2),
+            reference_pattern=reference_pattern,
+        )
+        
+        console.print("[cyan]Generating JAX translation (legacy mode)...[/cyan]")
+        
+        # Query Claude for translation
+        response = self.query_claude(
+            prompt=prompt,
+            system_prompt=TRANSLATION_PROMPTS["system"],
+            max_tokens=self.max_tokens,
+        )
+        
+        # Parse response into code files
+        return self._parse_translation_response(response, module_name)
+    
+    def _get_module_dependencies(self, module_name: str) -> Dict[str, Any]:
+        """
+        Get dependencies for a module.
+        
+        Args:
+            module_name: Module name
+            
+        Returns:
+            Dictionary with uses and used_by lists
+        """
+        deps = {"uses": [], "used_by": []}
+        
+        if self.analysis_results:
+            all_deps = self.analysis_results.get("parsing", {}).get("dependencies", {})
+            if module_name in all_deps:
+                deps["uses"] = all_deps[module_name]
+            
+            # Find who uses this module
+            deps["used_by"] = [
+                mod for mod, mod_deps in all_deps.items() 
+                if module_name in mod_deps
+            ]
+        
+        return deps
     
     def _remap_fortran_path(self, original_path: str) -> Path:
         """

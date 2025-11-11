@@ -104,5 +104,72 @@ FORTRAN:
 ```
 
 Requirements: NamedTuple, default values, document sources.""",
+
+    "translate_unit": """Translate this translation unit to JAX.
+
+MODULE: {module_name}
+UNIT: {unit_id} ({unit_type})
+LINES: {line_start}-{line_end}
+
+FORTRAN CODE:
+```fortran
+{fortran_code}
+```
+
+UNIT INFO:
+```json
+{unit_info}
+```
+
+CONTEXT (module dependencies, previously translated units):
+```json
+{context}
+```
+
+REFERENCE PATTERN:
+```python
+{reference_pattern}
+```
+
+REQUIREMENTS:
+- Pure functions with type hints
+- Preserve physics exactly (lines {line_start}-{line_end} from original)
+- Vectorize loops, use jnp.where for conditionals
+- If unit_type is "inner", this is part of parent: {parent_id}
+- Document with Fortran line reference
+
+Output ONLY the translated code for this unit.""",
+
+    "assemble_module": """Assemble complete JAX module from translated units.
+
+MODULE: {module_name}
+
+TRANSLATED UNITS:
+```json
+{translated_units}
+```
+
+MODULE INFO:
+```json
+{module_info}
+```
+
+REFERENCE PATTERN:
+```python
+{reference_pattern}
+```
+
+REQUIREMENTS:
+1. Combine all units into cohesive module
+2. Add imports (jax, jax.numpy as jnp, typing, NamedTuple)
+3. Organize: imports → types → params → functions
+4. Ensure consistency across units
+5. Generate params file if needed
+6. Add module-level docstring
+
+Output:
+1. Main physics module (complete, executable)
+2. Parameters file (if needed)
+3. Brief assembly notes""",
 }
 

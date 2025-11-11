@@ -1,26 +1,10 @@
-"""
-Configuration and run control for JAX-CTSM.
-
-This package contains configuration management and run control utilities
-translated from CTSM's Fortran modules.
-"""
-
-from jax_ctsm.config.run_control import (
-    RunControlConfig,
-    DEFAULT_CONFIG,
-    create_run_config,
-    log_message,
-    get_config,
-    set_config,
-    iulog,
-)
-
-__all__ = [
-    "RunControlConfig",
-    "DEFAULT_CONFIG",
-    "create_run_config",
-    "log_message",
-    "get_config",
-    "set_config",
-    "iulog",
-]
+from jax_ctsm.control.clm_varctl import ClmVarCtl, create_default_clm_varctl
+    
+    # Create configuration
+    config = create_default_clm_varctl()
+    
+    # Or customize
+    config = ClmVarCtl(iulog=7)
+    
+    # Pass to functions that need it
+    result = some_clm_function(state, config)

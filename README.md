@@ -2,7 +2,7 @@
 
 ## Quick Start
 
-The translator now uses static analysis JSON files for better translations.
+The translator uses static analysis JSON files and processes translation units **iteratively** for better translations.
 
 ### Setup
 
@@ -48,12 +48,14 @@ result = translator.translate_module(
 # 1. Verify setup
 python examples/verify_json_integration.py
 
-# 2. Translate samples
+# 2. Translate samples (iterative approach)
 python examples/translate_with_json.py
 
 # 3. Batch translate
 python examples/batch_translate_modules.py
 ```
+
+See [TESTING.md](TESTING.md) for detailed testing instructions.
 
 ## What Changed
 
@@ -72,11 +74,26 @@ translator.translate_module(
 )
 ```
 
+## Translation Approach
+
+**Iterative Unit-by-Unit Processing**:
+1. Each translation unit translated separately (N LLM calls)
+2. Each unit sees previously translated units for context
+3. All units assembled into final module (1 assembly LLM call)
+4. Total: N+1 LLM calls per module
+
+**Benefits**:
+- Smaller, focused prompts per unit
+- Better for large/complex modules
+- Previous context available to subsequent units
+- Clearer debugging (identify problematic units)
+
 ## Benefits
 
 - **Dependency aware**: Knows what modules depend on each other
 - **Complexity guided**: LLM sees difficulty scores and effort estimates  
 - **Line precise**: References exact Fortran source lines
+- **Iterative translation**: Unit-by-unit with context accumulation
 - **Batch ready**: Translate entire project systematically
 
 ## JSON Structure

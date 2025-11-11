@@ -9,6 +9,7 @@ from jax_agents.orchestrator import OrchestratorAgent
 from jax_agents.static_analysis import StaticAnalysisAgent, AnalysisResult
 from jax_agents.translator import TranslatorAgent, TranslationResult
 from jax_agents.test_agent import TestAgent, TestGenerationResult
+from jax_agents.repair_agent import RepairAgent, RepairResult
 
 __version__ = "0.1.0"
 
@@ -21,5 +22,7 @@ __all__ = [
     "TranslationResult",
     "TestAgent",
     "TestGenerationResult",
+    "RepairAgent",
+    "RepairResult",
 ]
 

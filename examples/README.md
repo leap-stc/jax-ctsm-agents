@@ -84,6 +84,56 @@ python examples/convert_single_module.py
 
 ---
 
+### 5. `generate_tests.py` - Test Generation
+**Purpose:** Generate comprehensive test suites for translated JAX code.
+
+```bash
+python examples/generate_tests.py
+```
+
+**Features:**
+- Analyzes Python function signatures
+- Generates synthetic test data covering edge cases
+- Creates pytest files with parametrized tests
+- Produces test documentation
+
+**Use when:**
+- You've translated a module and need tests
+- You want comprehensive test coverage
+- You need test data for verification
+
+---
+
+### 6. `repair_agent_example.py` - Automatic Bug Fixing
+**Purpose:** Automatically debug and fix failed Python/JAX translations.
+
+```bash
+python examples/repair_agent_example.py
+```
+
+**Features:**
+- Analyzes test failures and error messages
+- Identifies root causes by comparing with Fortran
+- Generates corrected Python code
+- Runs tests iteratively until they pass
+- Creates comprehensive root cause analysis reports
+
+**Workflow:**
+1. Takes failed Python code and test report
+2. Analyzes what went wrong
+3. Generates a fix
+4. Runs tests (if pytest file provided)
+5. If tests still fail, iterates with new analysis
+6. Produces corrected code + root cause report
+
+**Use when:**
+- Your translation has failing tests
+- You need to understand why tests failed
+- You want automated debugging assistance
+- You need root cause analysis documentation
+
+---
+
 ## Recommended Workflow
 
 ### For Development/Debugging
@@ -104,6 +154,32 @@ python examples/translate_from_analysis.py
 # All-in-one orchestrated conversion
 python examples/convert_single_module.py
 ```
+
+### Complete Workflow with Testing & Repair
+
+```bash
+# Step 1: Translate the module
+python examples/translate_with_context.py
+
+# Step 2: Generate comprehensive tests
+python examples/generate_tests.py
+
+# Step 3: Run the generated tests
+pytest output/test_ModuleName.py -v
+
+# Step 4: If tests fail, use repair agent
+python examples/repair_agent_example.py
+
+# Step 5: Verify the fix
+pytest output/test_ModuleName.py -v
+```
+
+This workflow ensures:
+1. ✓ Proper translation from Fortran
+2. ✓ Comprehensive test coverage
+3. ✓ Automated bug detection
+4. ✓ Automatic debugging and repair
+5. ✓ Root cause analysis documentation
 
 ---
 

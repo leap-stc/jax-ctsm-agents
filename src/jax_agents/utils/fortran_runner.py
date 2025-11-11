@@ -108,15 +108,16 @@ class FortranRunner:
             for inc_dir in self.include_dirs:
                 cmd.extend(["-I", str(inc_dir)])
             
-            # Add source files
+            # Add source file (only - ignore dependencies for standalone harness)
             cmd.append(str(source_path))
-            if dependencies:
-                cmd.extend(str(dep) for dep in dependencies)
+            # Note: We don't add dependencies anymore since the harness should be standalone
+            # if dependencies:
+            #     cmd.extend(str(dep) for dep in dependencies)
             
             # Add output specification
             cmd.extend(["-o", str(output_path)])
             
-            logger.info(f"Compiling with command: {' '.join(cmd)}")
+            logger.info(f"Compiling standalone harness: {' '.join(cmd)}")
             
             # Compile
             result = subprocess.run(
@@ -127,9 +128,28 @@ class FortranRunner:
             )
             
             if result.returncode != 0:
-                error_msg = f"Fortran compilation failed:\n{result.stderr}"
+                error_msg = (
+                    f"Fortran compilation failed:\n{result.stderr}\n\n"
+                    f"This usually means the test harness still has external dependencies.\n"
+                    f"The harness should be completely standalone with all code inline."
+                )
                 logger.error(error_msg)
+                
+                # Try to provide helpful error message
+                if "Can't open module file" in result.stderr:
+                    error_msg += (
+                        "\n\nHINT: The generated harness is trying to 'use' external modules.\n"
+                        "Ask the LLM to create a STANDALONE harness with:\n"
+                        "1. No 'use' statements\n"
+                        "2. Direct precision definition: integer, parameter :: r8 = selected_real_kind(15, 307)\n"
+                        "3. All constants defined inline\n"
+                        "4. Complete subroutine code in a 'contains' section"
+                    )
+                
                 raise FortranCompilationError(error_msg)
+            
+            if result.stdout:
+                logger.debug(f"Compiler output: {result.stdout}")
             
             logger.info(f"Successfully compiled to {output_path}")
             return output_path

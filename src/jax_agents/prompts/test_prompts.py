@@ -185,7 +185,7 @@ For arrays, use nested lists (e.g., [[1,2],[3,4]] for 2D array).
 For scalars, use numeric values.
 Ensure all input dimensions are consistent within each test case.""",
 
-    "create_fortran_harness": """Create a Fortran test harness that can read test data and execute the original subroutine.
+    "create_fortran_harness": """Create a STANDALONE Fortran test harness that can read test data and execute the original subroutine.
 
 Original Fortran Code:
 ```fortran
@@ -204,28 +204,66 @@ Test Data Structure:
 
 Module: {module_name}
 
-Create a Fortran program that:
-1. Declares all necessary variables matching the subroutine signature
-2. Reads input data from a file 'test_input.dat' (simple format, one value per line)
-3. Calls the original subroutine
-4. Writes output data to 'test_output.dat' (simple format: variable_name=value)
-5. Handles arrays properly (read/write in Fortran array order)
-6. Includes the original subroutine code or uses it from a module
+IMPORTANT: Create a STANDALONE program that does NOT depend on external modules.
 
-The harness should be compilable with gfortran using standard flags.
+Requirements:
+1. Define `r8` precision directly: `integer, parameter :: r8 = selected_real_kind(15, 307)`
+2. Replace any `use` statements with direct type definitions
+3. Include simplified versions of any required constants (e.g., denh2o=1000.0_r8, tfrz=273.15_r8)
+4. Copy the ENTIRE subroutine body inline (don't reference external modules)
+5. Declare all necessary variables matching the subroutine signature
+6. Read input data from stdin in JSON format
+7. Write output data to stdout in simple format: variable_name=value
+8. Handle arrays properly (Fortran array order)
 
-Output format for test_output.dat should be:
+The harness should be:
+- Compilable with ONLY gfortran (no external dependencies)
+- Self-contained (all code inline)
+- Able to read JSON-like input from stdin
+- Able to write simple key=value output to stdout
+
+Structure:
+```fortran
+program test_{module_name}
+  implicit none
+  
+  ! Define precision
+  integer, parameter :: r8 = selected_real_kind(15, 307)
+  
+  ! Define necessary constants
+  real(r8), parameter :: denh2o = 1000.0_r8
+  real(r8), parameter :: tfrz = 273.15_r8
+  ! ... other constants ...
+  
+  ! Declare variables
+  real(r8) :: var1, var2
+  real(r8), dimension(10) :: array1
+  ! ... other variables ...
+  
+  ! Read inputs from stdin
+  read(*,*) var1
+  read(*,*) var2
+  ! ... read other inputs ...
+  
+  ! Call subroutine (inline below)
+  call subroutine_name(var1, var2, array1, ...)
+  
+  ! Write outputs to stdout
+  write(*,'(A,E20.12)') 'var1=', var1
+  write(*,'(A,E20.12)') 'var2=', var2
+  ! ... write other outputs ...
+  
+contains
+
+  subroutine subroutine_name(var1, var2, array1, ...)
+    ! Copy the ENTIRE subroutine body here
+    ! Replace module dependencies with local definitions
+  end subroutine
+
+end program
 ```
-output_var1=1.234
-output_var2=5.678
-array_var1(1)=1.0
-array_var1(2)=2.0
-...
-```
 
-Or preferably JSON format if you can include a simple JSON writer in Fortran.
-
-Return only the Fortran code, properly formatted.""",
+Return only the complete, standalone Fortran code that can be compiled without any external dependencies.""",
 
     "generate_pytest": """Generate a pytest file for the translated Python function.
 

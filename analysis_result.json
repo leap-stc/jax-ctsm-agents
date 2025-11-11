@@ -1,0 +1,823 @@
+{
+  "module_name": "CNMRespMod",
+  "description": "Module for calculating maintenance respiration for coupled carbon-nitrogen dynamics in CTSM. Computes respiration fluxes for leaves, fine roots, live stems, live coarse roots, and reproductive tissues based on nitrogen content and temperature-dependent Q10 relationships.",
+  "dependencies": {
+    "modules": [
+      "shr_kind_mod",
+      "shr_const_mod",
+      "clm_varpar",
+      "clm_varcon",
+      "decompMod",
+      "abortutils",
+      "shr_log_mod",
+      "pftconMod",
+      "SoilStateType",
+      "CanopyStateType",
+      "TemperatureType",
+      "PhotosynthesisMod",
+      "CNVegcarbonfluxType",
+      "CNVegnitrogenstateType",
+      "CNSharedParamsMod",
+      "CropReprPoolsMod",
+      "PatchType",
+      "fileutils",
+      "shr_nl_mod",
+      "spmdMod",
+      "shr_mpi_mod",
+      "clm_varctl",
+      "ncdio_pio"
+    ],
+    "includes": [],
+    "external_types": [
+      "bounds_type",
+      "soilstate_type",
+      "canopystate_type",
+      "temperature_type",
+      "photosyns_type",
+      "cnveg_carbonflux_type",
+      "cnveg_nitrogenstate_type"
+    ]
+  },
+  "data_types": [
+    {
+      "name": "params_type",
+      "kind": "derived_type",
+      "fields": [
+        {
+          "name": "br",
+          "type": "real(r8)",
+          "default": "spval",
+          "description": "Base rate for maintenance respiration (gC/gN/s) - default 2.525e-6 from Ryan 1991"
+        },
+        {
+          "name": "br_root",
+          "type": "real(r8)",
+          "default": "spval",
+          "description": "Base rate for maintenance respiration for roots (gC/gN/s) - can differ from br for acclimation"
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "parameters": [
+    {
+      "name": "sourcefile",
+      "value": "__FILE__",
+      "type": "character(len=*)",
+      "visibility": "private",
+      "description": "Source file name for error reporting"
+    },
+    {
+      "name": "Q10",
+      "value": "1.5 (from CNParamsShareInst)",
+      "type": "real(r8)",
+      "description": "Temperature sensitivity parameter for respiration. Originally 2.0, reduced to 1.5 for tuning atmospheric CO2 seasonal cycle"
+    },
+    {
+      "name": "nrepr",
+      "value": "from CropReprPoolsMod",
+      "type": "integer",
+      "description": "Number of reproductive pools for crops"
+    }
+  ],
+  "subroutines": [
+    {
+      "name": "CNMRespReadNML",
+      "purpose": "Read namelist parameters for maintenance respiration from input file. Must be called before readParams.",
+      "inputs": [
+        {
+          "name": "NLFilename",
+          "type": "character(len=*)",
+          "intent": "in",
+          "description": "Path to namelist file"
+        }
+      ],
+      "outputs": [
+        "params_inst%br_root - stored in module-level variable"
+      ],
+      "key_operations": [
+        "Open namelist file on master processor",
+        "Search for 'cnmresp_inparm' namelist group",
+        "Read br_root parameter",
+        "Broadcast br_root to all processors via MPI",
+        "Store in params_inst module variable",
+        "Write settings to log"
+      ],
+      "loops": [],
+      "fortran_patterns": {
+        "filters": [],
+        "conditionals": [
+          "if (masterproc) - MPI master processor check",
+          "if (ierr == 0) - namelist group found check",
+          "if (ierr /= 0) - read error check"
+        ],
+        "calculations": [],
+        "mpi_operations": [
+          "shr_mpi_bcast(br_root, mpicom) - broadcast parameter to all processors"
+        ]
+      }
+    },
+    {
+      "name": "readParams",
+      "purpose": "Read base respiration rate parameter from NetCDF parameter file. Must be called after CNMRespReadNML.",
+      "inputs": [
+        {
+          "name": "ncid",
+          "type": "type(file_desc_t)",
+          "intent": "inout",
+          "description": "PIO NetCDF file descriptor"
+        }
+      ],
+      "outputs": [
+        "params_inst%br - base maintenance respiration rate",
+        "params_inst%br_root - set to br if not already set by namelist"
+      ],
+      "key_operations": [
+        "Read 'br_mr' variable from NetCDF file",
+        "Store in params_inst%br",
+        "If br_root not set by namelist (still spval), set to br",
+        "Error handling for missing parameters"
+      ],
+      "loops": [],
+      "fortran_patterns": {
+        "filters": [],
+        "conditionals": [
+          "if (.not. readv) - check if variable was successfully read",
+          "if (params_inst%br_root == spval) - check if br_root needs default value"
+        ],
+        "calculations": [],
+        "io_operations": [
+          "ncd_io(varname='br_mr', ...) - read parameter from NetCDF"
+        ]
+      }
+    },
+    {
+      "name": "CNMResp",
+      "purpose": "Calculate maintenance respiration fluxes for all live plant tissues (leaves, fine roots, live stems, live coarse roots, reproductive organs) based on nitrogen content and temperature-dependent Q10 relationships.",
+      "inputs": [
+        {
+          "name": "bounds",
+          "type": "type(bounds_type)",
+          "intent": "in",
+          "description": "Bounds for array indexing (begc, endc, begp, endp)"
+        },
+        {
+          "name": "num_soilc",
+          "type": "integer",
+          "intent": "in",
+          "description": "Number of soil columns in filter"
+        },
+        {
+          "name": "filter_soilc",
+          "type": "integer(:)",
+          "intent": "in",
+          "description": "Column filter array for soil points"
+        },
+        {
+          "name": "num_soilp",
+          "type": "integer",
+          "intent": "in",
+          "description": "Number of soil patches in filter"
+        },
+        {
+          "name": "filter_soilp",
+          "type": "integer(:)",
+          "intent": "in",
+          "description": "Patch filter array for soil points"
+        },
+        {
+          "name": "canopystate_inst",
+          "type": "type(canopystate_type)",
+          "intent": "in",
+          "description": "Canopy state variables (LAI, vegetation fraction)"
+        },
+        {
+          "name": "soilstate_inst",
+          "type": "type(soilstate_type)",
+          "intent": "in",
+          "description": "Soil state variables (root fraction by layer)"
+        },
+        {
+          "name": "temperature_inst",
+          "type": "type(temperature_type)",
+          "intent": "in",
+          "description": "Temperature variables (soil, 2m air, 10-day running mean)"
+        },
+        {
+          "name": "photosyns_inst",
+          "type": "type(photosyns_type)",
+          "intent": "in",
+          "description": "Photosynthesis variables (leaf maintenance respiration rates, acclimation flag)"
+        },
+        {
+          "name": "cnveg_nitrogenstate_inst",
+          "type": "type(cnveg_nitrogenstate_type)",
+          "intent": "in",
+          "description": "Vegetation nitrogen state (N content of tissues)"
+        },
+        {
+          "name": "cnveg_carbonflux_inst",
+          "type": "type(cnveg_carbonflux_type)",
+          "intent": "inout",
+          "description": "Vegetation carbon fluxes (maintenance respiration outputs)"
+        }
+      ],
+      "outputs": [
+        "leaf_mr(p) - leaf maintenance respiration (gC/m2/s)",
+        "froot_mr(p) - fine root maintenance respiration (gC/m2/s)",
+        "livestem_mr(p) - live stem maintenance respiration (gC/m2/s)",
+        "livecroot_mr(p) - live coarse root maintenance respiration (gC/m2/s)",
+        "reproductive_mr(p,k) - reproductive tissue maintenance respiration (gC/m2/s)"
+      ],
+      "key_operations": [
+        "Calculate Q10 temperature correction factors for each soil layer",
+        "Apply optional root/stem acclimation adjustment to base rates",
+        "Calculate leaf MR from photosynthesis module outputs (sunlit + shaded)",
+        "Calculate woody tissue MR (stem, coarse root) for trees",
+        "Calculate crop reproductive tissue MR for prognostic crops",
+        "Calculate fine root MR integrated over soil layers with depth-dependent temperature"
+      ],
+      "loops": [
+        {
+          "type": "vertical",
+          "variable": "j",
+          "range": "1:nlevgrnd",
+          "description": "Loop over soil layers to calculate temperature corrections"
+        },
+        {
+          "type": "spatial",
+          "variable": "fc",
+          "range": "1:num_soilc",
+          "description": "Loop over filtered soil columns for temperature correction"
+        },
+        {
+          "type": "spatial",
+          "variable": "fp",
+          "range": "1:num_soilp",
+          "description": "Loop over filtered soil patches for leaf and woody tissue MR"
+        },
+        {
+          "type": "vertical",
+          "variable": "j",
+          "range": "1:nlevgrnd",
+          "description": "Loop over soil layers for fine root MR calculation"
+        },
+        {
+          "type": "spatial",
+          "variable": "fp",
+          "range": "1:num_soilp",
+          "description": "Nested loop over patches within soil layer loop for fine root MR"
+        },
+        {
+          "type": "pool",
+          "variable": "k",
+          "range": "1:nrepr",
+          "description": "Loop over reproductive pools for crop MR"
+        }
+      ],
+      "fortran_patterns": {
+        "filters": [
+          "filter_soilc(fc) - column filter for active soil points",
+          "filter_soilp(fp) - patch filter for active soil points"
+        ],
+        "conditionals": [
+          "if (frac_veg_nosno(p) == 1) - check if vegetation not covered by snow",
+          "if (woody(ivt(p)) == 1) - check if woody PFT",
+          "if (is_prognostic_crop(ivt(p))) - check if prognostic crop",
+          "if (rootstem_acc) - check if root/stem acclimation is enabled"
+        ],
+        "calculations": [
+          "tcsoi(c,j) = Q10**((t_soisno(c,j)-SHR_CONST_TKFRZ - 20.0)/10.0) - soil layer temperature correction",
+          "tc = Q10**((t_ref2m(p)-SHR_CONST_TKFRZ - 20.0)/10.0) - 2m air temperature correction",
+          "br = br * 10**(-0.00794*((t10(p)-tfrz)-25)) - acclimation adjustment",
+          "leaf_mr(p) = lmrsun(p)*laisun(p)*12.011e-6 + lmrsha(p)*laisha(p)*12.011e-6 - leaf MR from photosynthesis",
+          "livestem_mr(p) = livestemn(p)*br*tc - stem MR from N content and temperature",
+          "froot_mr(p) = froot_mr(p) + frootn(p)*br_root*tcsoi(c,j)*crootfr(p,j) - fine root MR accumulated over layers"
+        ]
+      }
+    }
+  ],
+  "spatial_hierarchy": {
+    "levels_used": [
+      "patch",
+      "column"
+    ],
+    "iteration_patterns": [
+      "Filter-based iteration: Uses filter arrays (filter_soilc, filter_soilp) to iterate only over active soil points",
+      "Column-level: Temperature corrections calculated at column level for each soil layer",
+      "Patch-level: Most respiration calculations at patch level, accessing column data via patch%column(p)",
+      "Vertical integration: Fine root respiration integrates over soil layers using crootfr weights"
+    ],
+    "aggregation_patterns": [
+      "Fine root MR accumulated across soil layers: froot_mr(p) += contribution from each layer",
+      "Leaf MR aggregated from sunlit and shaded components",
+      "Temperature corrections applied at appropriate spatial level (column for soil, patch for air)"
+    ]
+  },
+  "jax_translation_notes": {
+    "challenges": [
+      "Filter-based iteration: Fortran uses dynamic filter arrays to iterate only over active points",
+      "Module-level state: params_inst is a module-level variable that persists across calls",
+      "MPI operations: Namelist reading and broadcasting requires MPI, not needed in JAX",
+      "NetCDF I/O: Parameter reading from file needs alternative approach",
+      "Associate blocks: Fortran's associate construct for aliasing variables",
+      "Nested loops with accumulation: Fine root MR accumulates over soil layers",
+      "Conditional tissue types: Different calculations for woody vs non-woody, crops vs non-crops",
+      "Array indexing: Fortran uses 1-based indexing, JAX uses 0-based",
+      "Optional acclimation: rootstem_acc flag changes calculation behavior"
+    ],
+    "suggested_approach": [
+      "Replace filters with boolean masks: Use jnp.where or boolean indexing instead of filter arrays",
+      "Use pytree/dataclass for parameters: Store params_inst as a frozen dataclass or dict",
+      "Remove MPI operations: Assume parameters are pre-loaded in Python driver",
+      "Pre-load parameters: Read NetCDF in Python initialization, pass as arguments",
+      "Explicit variable naming: Replace associate with explicit variable assignments or use dict unpacking",
+      "Use jnp.sum with axis: Replace accumulation loop with vectorized sum over soil layers",
+      "Use jnp.where for conditionals: Replace if statements with jnp.where for vectorization",
+      "Add offset in indexing: Subtract 1 from Fortran indices or use 0-based throughout",
+      "Use lax.cond or jnp.where: Handle acclimation flag with conditional execution",
+      "Vectorize over patches: Process all patches simultaneously using array operations"
+    ],
+    "data_structure_mapping": {
+      "params_type": "Python dataclass or NamedTuple with br and br_root fields",
+      "filter_soilc/filter_soilp": "Boolean mask arrays (num_cols,) and (num_patches,)",
+      "tcsoi(c,j)": "2D JAX array (num_cols, nlevgrnd) for temperature corrections",
+      "tissue nitrogen states": "1D JAX arrays (num_patches,) for each tissue type",
+      "maintenance respiration outputs": "1D JAX arrays (num_patches,) for each tissue type",
+      "reproductive_mr": "2D JAX array (num_patches, nrepr) for crop reproductive pools",
+      "crootfr": "2D JAX array (num_patches, nlevgrnd) for root fraction by layer",
+      "patch%column(p)": "1D integer array (num_patches,) mapping patches to columns",
+      "ivt (vegetation type)": "1D integer array (num_patches,) for PFT indices"
+    },
+    "vectorization_strategy": {
+      "temperature_corrections": "Vectorize over all columns and layers simultaneously: tcsoi = Q10**((t_soisno - TKFRZ - 20.0)/10.0)",
+      "leaf_mr": "Vectorize over all patches: leaf_mr = (lmrsun * laisun + lmrsha * laisha) * 12.011e-6 * frac_veg_nosno",
+      "woody_tissue_mr": "Use jnp.where with woody mask: livestem_mr = jnp.where(woody, livestemn * br * tc, 0.0)",
+      "fine_root_mr": "Use einsum or matrix multiply: froot_mr = frootn * br_root * jnp.sum(tcsoi[col_idx] * crootfr, axis=1)",
+      "acclimation": "Use lax.cond or jnp.where: br_adj = jnp.where(rootstem_acc, br * 10**(-0.00794*(t10-tfrz-25)), br)"
+    },
+    "key_equations": {
+      "temperature_correction_soil": "tcsoi(c,j) = Q10^((T_soil(c,j) - T_freeze - 20) / 10)",
+      "temperature_correction_air": "tc = Q10^((T_2m - T_freeze - 20) / 10)",
+      "acclimation_adjustment": "br_adj = br * 10^(-0.00794 * (T_10day - T_freeze - 25))",
+      "leaf_mr": "leaf_mr = (lmr_sun * LAI_sun + lmr_sha * LAI_sha) * 12.011e-6",
+      "stem_mr": "stem_mr = N_stem * br * tc",
+      "fine_root_mr": "froot_mr = N_froot * br_root * sum_over_layers(tcsoi * rootfr)"
+    },
+    "special_considerations": [
+      "Q10 value is tuned (1.5 not 2.0) - important for model calibration",
+      "Leaf MR comes from photosynthesis module, not calculated here - need to ensure consistency",
+      "Fine root MR integrates over soil layers with depth-dependent temperature - requires careful indexing",
+      "Acclimation is optional and experimental - may need to be configurable",
+      "Snow cover affects leaf MR (frac_veg_nosno) - binary flag in Fortran, could be continuous in JAX",
+      "Different PFT types have different tissue components - need PFT-aware masking",
+      "Conversion factor 12.011e-6 converts umol CO2/m2/s to gC/m2/s",
+      "Base rate from Ryan 1991 paper - well-established empirical relationship"
+    ],
+    "testing_strategy": [
+      "Unit test each tissue type MR calculation separately",
+      "Test temperature correction functions with known inputs",
+      "Verify Q10 relationship matches Fortran exactly",
+      "Test acclimation adjustment with and without flag",
+      "Verify fine root integration over soil layers",
+      "Test PFT-specific logic (woody, crop, grass)",
+      "Compare outputs with Fortran for identical inputs",
+      "Test edge cases: zero nitrogen, extreme temperatures, snow cover"
+    ]
+  },
+  "raw_analysis": {
+    "module_name": "CNMRespMod",
+    "description": "Module for calculating maintenance respiration for coupled carbon-nitrogen dynamics in CTSM. Computes respiration fluxes for leaves, fine roots, live stems, live coarse roots, and reproductive tissues based on nitrogen content and temperature-dependent Q10 relationships.",
+    "dependencies": {
+      "modules": [
+        "shr_kind_mod",
+        "shr_const_mod",
+        "clm_varpar",
+        "clm_varcon",
+        "decompMod",
+        "abortutils",
+        "shr_log_mod",
+        "pftconMod",
+        "SoilStateType",
+        "CanopyStateType",
+        "TemperatureType",
+        "PhotosynthesisMod",
+        "CNVegcarbonfluxType",
+        "CNVegnitrogenstateType",
+        "CNSharedParamsMod",
+        "CropReprPoolsMod",
+        "PatchType",
+        "fileutils",
+        "shr_nl_mod",
+        "spmdMod",
+        "shr_mpi_mod",
+        "clm_varctl",
+        "ncdio_pio"
+      ],
+      "includes": [],
+      "external_types": [
+        "bounds_type",
+        "soilstate_type",
+        "canopystate_type",
+        "temperature_type",
+        "photosyns_type",
+        "cnveg_carbonflux_type",
+        "cnveg_nitrogenstate_type"
+      ]
+    },
+    "data_types": [
+      {
+        "name": "params_type",
+        "kind": "derived_type",
+        "visibility": "private",
+        "fields": [
+          {
+            "name": "br",
+            "type": "real(r8)",
+            "default": "spval",
+            "description": "Base rate for maintenance respiration (gC/gN/s) - default 2.525e-6 from Ryan 1991"
+          },
+          {
+            "name": "br_root",
+            "type": "real(r8)",
+            "default": "spval",
+            "description": "Base rate for maintenance respiration for roots (gC/gN/s) - can differ from br for acclimation"
+          }
+        ]
+      }
+    ],
+    "parameters": [
+      {
+        "name": "sourcefile",
+        "value": "__FILE__",
+        "type": "character(len=*)",
+        "visibility": "private",
+        "description": "Source file name for error reporting"
+      },
+      {
+        "name": "Q10",
+        "value": "1.5 (from CNParamsShareInst)",
+        "type": "real(r8)",
+        "description": "Temperature sensitivity parameter for respiration. Originally 2.0, reduced to 1.5 for tuning atmospheric CO2 seasonal cycle"
+      },
+      {
+        "name": "nrepr",
+        "value": "from CropReprPoolsMod",
+        "type": "integer",
+        "description": "Number of reproductive pools for crops"
+      }
+    ],
+    "subroutines": [
+      {
+        "name": "CNMRespReadNML",
+        "purpose": "Read namelist parameters for maintenance respiration from input file. Must be called before readParams.",
+        "inputs": [
+          {
+            "name": "NLFilename",
+            "type": "character(len=*)",
+            "intent": "in",
+            "description": "Path to namelist file"
+          }
+        ],
+        "outputs": [
+          "params_inst%br_root - stored in module-level variable"
+        ],
+        "key_operations": [
+          "Open namelist file on master processor",
+          "Search for 'cnmresp_inparm' namelist group",
+          "Read br_root parameter",
+          "Broadcast br_root to all processors via MPI",
+          "Store in params_inst module variable",
+          "Write settings to log"
+        ],
+        "loops": [],
+        "fortran_patterns": {
+          "filters": [],
+          "conditionals": [
+            "if (masterproc) - MPI master processor check",
+            "if (ierr == 0) - namelist group found check",
+            "if (ierr /= 0) - read error check"
+          ],
+          "calculations": [],
+          "mpi_operations": [
+            "shr_mpi_bcast(br_root, mpicom) - broadcast parameter to all processors"
+          ]
+        }
+      },
+      {
+        "name": "readParams",
+        "purpose": "Read base respiration rate parameter from NetCDF parameter file. Must be called after CNMRespReadNML.",
+        "inputs": [
+          {
+            "name": "ncid",
+            "type": "type(file_desc_t)",
+            "intent": "inout",
+            "description": "PIO NetCDF file descriptor"
+          }
+        ],
+        "outputs": [
+          "params_inst%br - base maintenance respiration rate",
+          "params_inst%br_root - set to br if not already set by namelist"
+        ],
+        "key_operations": [
+          "Read 'br_mr' variable from NetCDF file",
+          "Store in params_inst%br",
+          "If br_root not set by namelist (still spval), set to br",
+          "Error handling for missing parameters"
+        ],
+        "loops": [],
+        "fortran_patterns": {
+          "filters": [],
+          "conditionals": [
+            "if (.not. readv) - check if variable was successfully read",
+            "if (params_inst%br_root == spval) - check if br_root needs default value"
+          ],
+          "calculations": [],
+          "io_operations": [
+            "ncd_io(varname='br_mr', ...) - read parameter from NetCDF"
+          ]
+        }
+      },
+      {
+        "name": "CNMResp",
+        "purpose": "Calculate maintenance respiration fluxes for all live plant tissues (leaves, fine roots, live stems, live coarse roots, reproductive organs) based on nitrogen content and temperature-dependent Q10 relationships.",
+        "inputs": [
+          {
+            "name": "bounds",
+            "type": "type(bounds_type)",
+            "intent": "in",
+            "description": "Bounds for array indexing (begc, endc, begp, endp)"
+          },
+          {
+            "name": "num_soilc",
+            "type": "integer",
+            "intent": "in",
+            "description": "Number of soil columns in filter"
+          },
+          {
+            "name": "filter_soilc",
+            "type": "integer(:)",
+            "intent": "in",
+            "description": "Column filter array for soil points"
+          },
+          {
+            "name": "num_soilp",
+            "type": "integer",
+            "intent": "in",
+            "description": "Number of soil patches in filter"
+          },
+          {
+            "name": "filter_soilp",
+            "type": "integer(:)",
+            "intent": "in",
+            "description": "Patch filter array for soil points"
+          },
+          {
+            "name": "canopystate_inst",
+            "type": "type(canopystate_type)",
+            "intent": "in",
+            "description": "Canopy state variables (LAI, vegetation fraction)"
+          },
+          {
+            "name": "soilstate_inst",
+            "type": "type(soilstate_type)",
+            "intent": "in",
+            "description": "Soil state variables (root fraction by layer)"
+          },
+          {
+            "name": "temperature_inst",
+            "type": "type(temperature_type)",
+            "intent": "in",
+            "description": "Temperature variables (soil, 2m air, 10-day running mean)"
+          },
+          {
+            "name": "photosyns_inst",
+            "type": "type(photosyns_type)",
+            "intent": "in",
+            "description": "Photosynthesis variables (leaf maintenance respiration rates, acclimation flag)"
+          },
+          {
+            "name": "cnveg_nitrogenstate_inst",
+            "type": "type(cnveg_nitrogenstate_type)",
+            "intent": "in",
+            "description": "Vegetation nitrogen state (N content of tissues)"
+          },
+          {
+            "name": "cnveg_carbonflux_inst",
+            "type": "type(cnveg_carbonflux_type)",
+            "intent": "inout",
+            "description": "Vegetation carbon fluxes (maintenance respiration outputs)"
+          }
+        ],
+        "outputs": [
+          "leaf_mr(p) - leaf maintenance respiration (gC/m2/s)",
+          "froot_mr(p) - fine root maintenance respiration (gC/m2/s)",
+          "livestem_mr(p) - live stem maintenance respiration (gC/m2/s)",
+          "livecroot_mr(p) - live coarse root maintenance respiration (gC/m2/s)",
+          "reproductive_mr(p,k) - reproductive tissue maintenance respiration (gC/m2/s)"
+        ],
+        "key_operations": [
+          "Calculate Q10 temperature correction factors for each soil layer",
+          "Apply optional root/stem acclimation adjustment to base rates",
+          "Calculate leaf MR from photosynthesis module outputs (sunlit + shaded)",
+          "Calculate woody tissue MR (stem, coarse root) for trees",
+          "Calculate crop reproductive tissue MR for prognostic crops",
+          "Calculate fine root MR integrated over soil layers with depth-dependent temperature"
+        ],
+        "loops": [
+          {
+            "type": "vertical",
+            "variable": "j",
+            "range": "1:nlevgrnd",
+            "description": "Loop over soil layers to calculate temperature corrections"
+          },
+          {
+            "type": "spatial",
+            "variable": "fc",
+            "range": "1:num_soilc",
+            "description": "Loop over filtered soil columns for temperature correction"
+          },
+          {
+            "type": "spatial",
+            "variable": "fp",
+            "range": "1:num_soilp",
+            "description": "Loop over filtered soil patches for leaf and woody tissue MR"
+          },
+          {
+            "type": "vertical",
+            "variable": "j",
+            "range": "1:nlevgrnd",
+            "description": "Loop over soil layers for fine root MR calculation"
+          },
+          {
+            "type": "spatial",
+            "variable": "fp",
+            "range": "1:num_soilp",
+            "description": "Nested loop over patches within soil layer loop for fine root MR"
+          },
+          {
+            "type": "pool",
+            "variable": "k",
+            "range": "1:nrepr",
+            "description": "Loop over reproductive pools for crop MR"
+          }
+        ],
+        "fortran_patterns": {
+          "filters": [
+            "filter_soilc(fc) - column filter for active soil points",
+            "filter_soilp(fp) - patch filter for active soil points"
+          ],
+          "conditionals": [
+            "if (frac_veg_nosno(p) == 1) - check if vegetation not covered by snow",
+            "if (woody(ivt(p)) == 1) - check if woody PFT",
+            "if (is_prognostic_crop(ivt(p))) - check if prognostic crop",
+            "if (rootstem_acc) - check if root/stem acclimation is enabled"
+          ],
+          "calculations": [
+            "tcsoi(c,j) = Q10**((t_soisno(c,j)-SHR_CONST_TKFRZ - 20.0)/10.0) - soil layer temperature correction",
+            "tc = Q10**((t_ref2m(p)-SHR_CONST_TKFRZ - 20.0)/10.0) - 2m air temperature correction",
+            "br = br * 10**(-0.00794*((t10(p)-tfrz)-25)) - acclimation adjustment",
+            "leaf_mr(p) = lmrsun(p)*laisun(p)*12.011e-6 + lmrsha(p)*laisha(p)*12.011e-6 - leaf MR from photosynthesis",
+            "livestem_mr(p) = livestemn(p)*br*tc - stem MR from N content and temperature",
+            "froot_mr(p) = froot_mr(p) + frootn(p)*br_root*tcsoi(c,j)*crootfr(p,j) - fine root MR accumulated over layers"
+          ]
+        }
+      }
+    ],
+    "spatial_hierarchy": {
+      "levels_used": [
+        "patch",
+        "column"
+      ],
+      "iteration_patterns": [
+        "Filter-based iteration: Uses filter arrays (filter_soilc, filter_soilp) to iterate only over active soil points",
+        "Column-level: Temperature corrections calculated at column level for each soil layer",
+        "Patch-level: Most respiration calculations at patch level, accessing column data via patch%column(p)",
+        "Vertical integration: Fine root respiration integrates over soil layers using crootfr weights"
+      ],
+      "aggregation_patterns": [
+        "Fine root MR accumulated across soil layers: froot_mr(p) += contribution from each layer",
+        "Leaf MR aggregated from sunlit and shaded components",
+        "Temperature corrections applied at appropriate spatial level (column for soil, patch for air)"
+      ]
+    },
+    "variable_relationships": {
+      "input_dependencies": [
+        "Leaf MR depends on: lmrsun, lmrsha, laisun, laisha, frac_veg_nosno",
+        "Stem MR depends on: livestemn, br, tc (from t_ref2m)",
+        "Coarse root MR depends on: livecrootn, br_root, tc",
+        "Fine root MR depends on: frootn, br_root, tcsoi (from t_soisno), crootfr",
+        "Reproductive MR depends on: reproductiven, br, tc",
+        "Temperature corrections depend on: Q10, t_soisno, t_ref2m, SHR_CONST_TKFRZ",
+        "Acclimation adjustment depends on: t10 (10-day running mean temperature)"
+      ],
+      "output_dependencies": [
+        "All MR fluxes feed into carbon balance calculations downstream",
+        "Total plant respiration = sum of all tissue MR components"
+      ]
+    },
+    "physical_constants": {
+      "Q10": {
+        "value": "1.5",
+        "units": "dimensionless",
+        "description": "Temperature sensitivity of respiration, tuned value"
+      },
+      "br_base": {
+        "value": "2.525e-6",
+        "units": "gC/gN/s",
+        "description": "Base maintenance respiration rate from Ryan 1991, converted from 0.0106 molC/(molN h)"
+      },
+      "reference_temp": {
+        "value": "20.0",
+        "units": "degrees C",
+        "description": "Reference temperature for Q10 calculation"
+      },
+      "acclimation_reference": {
+        "value": "25.0",
+        "units": "degrees C",
+        "description": "Reference temperature for acclimation adjustment"
+      },
+      "acclimation_coefficient": {
+        "value": "-0.00794",
+        "units": "1/degrees C",
+        "description": "Coefficient for root/stem respiration acclimation"
+      },
+      "carbon_molecular_weight": {
+        "value": "12.011e-6",
+        "units": "gC/umol",
+        "description": "Conversion factor from umol CO2 to gC"
+      }
+    },
+    "jax_translation_notes": {
+      "challenges": [
+        "Filter-based iteration: Fortran uses dynamic filter arrays to iterate only over active points",
+        "Module-level state: params_inst is a module-level variable that persists across calls",
+        "MPI operations: Namelist reading and broadcasting requires MPI, not needed in JAX",
+        "NetCDF I/O: Parameter reading from file needs alternative approach",
+        "Associate blocks: Fortran's associate construct for aliasing variables",
+        "Nested loops with accumulation: Fine root MR accumulates over soil layers",
+        "Conditional tissue types: Different calculations for woody vs non-woody, crops vs non-crops",
+        "Array indexing: Fortran uses 1-based indexing, JAX uses 0-based",
+        "Optional acclimation: rootstem_acc flag changes calculation behavior"
+      ],
+      "suggested_approach": [
+        "Replace filters with boolean masks: Use jnp.where or boolean indexing instead of filter arrays",
+        "Use pytree/dataclass for parameters: Store params_inst as a frozen dataclass or dict",
+        "Remove MPI operations: Assume parameters are pre-loaded in Python driver",
+        "Pre-load parameters: Read NetCDF in Python initialization, pass as arguments",
+        "Explicit variable naming: Replace associate with explicit variable assignments or use dict unpacking",
+        "Use jnp.sum with axis: Replace accumulation loop with vectorized sum over soil layers",
+        "Use jnp.where for conditionals: Replace if statements with jnp.where for vectorization",
+        "Add offset in indexing: Subtract 1 from Fortran indices or use 0-based throughout",
+        "Use lax.cond or jnp.where: Handle acclimation flag with conditional execution",
+        "Vectorize over patches: Process all patches simultaneously using array operations"
+      ],
+      "data_structure_mapping": {
+        "params_type": "Python dataclass or NamedTuple with br and br_root fields",
+        "filter_soilc/filter_soilp": "Boolean mask arrays (num_cols,) and (num_patches,)",
+        "tcsoi(c,j)": "2D JAX array (num_cols, nlevgrnd) for temperature corrections",
+        "tissue nitrogen states": "1D JAX arrays (num_patches,) for each tissue type",
+        "maintenance respiration outputs": "1D JAX arrays (num_patches,) for each tissue type",
+        "reproductive_mr": "2D JAX array (num_patches, nrepr) for crop reproductive pools",
+        "crootfr": "2D JAX array (num_patches, nlevgrnd) for root fraction by layer",
+        "patch%column(p)": "1D integer array (num_patches,) mapping patches to columns",
+        "ivt (vegetation type)": "1D integer array (num_patches,) for PFT indices"
+      },
+      "vectorization_strategy": {
+        "temperature_corrections": "Vectorize over all columns and layers simultaneously: tcsoi = Q10**((t_soisno - TKFRZ - 20.0)/10.0)",
+        "leaf_mr": "Vectorize over all patches: leaf_mr = (lmrsun * laisun + lmrsha * laisha) * 12.011e-6 * frac_veg_nosno",
+        "woody_tissue_mr": "Use jnp.where with woody mask: livestem_mr = jnp.where(woody, livestemn * br * tc, 0.0)",
+        "fine_root_mr": "Use einsum or matrix multiply: froot_mr = frootn * br_root * jnp.sum(tcsoi[col_idx] * crootfr, axis=1)",
+        "acclimation": "Use lax.cond or jnp.where: br_adj = jnp.where(rootstem_acc, br * 10**(-0.00794*(t10-tfrz-25)), br)"
+      },
+      "key_equations": {
+        "temperature_correction_soil": "tcsoi(c,j) = Q10^((T_soil(c,j) - T_freeze - 20) / 10)",
+        "temperature_correction_air": "tc = Q10^((T_2m - T_freeze - 20) / 10)",
+        "acclimation_adjustment": "br_adj = br * 10^(-0.00794 * (T_10day - T_freeze - 25))",
+        "leaf_mr": "leaf_mr = (lmr_sun * LAI_sun + lmr_sha * LAI_sha) * 12.011e-6",
+        "stem_mr": "stem_mr = N_stem * br * tc",
+        "fine_root_mr": "froot_mr = N_froot * br_root * sum_over_layers(tcsoi * rootfr)"
+      },
+      "special_considerations": [
+        "Q10 value is tuned (1.5 not 2.0) - important for model calibration",
+        "Leaf MR comes from photosynthesis module, not calculated here - need to ensure consistency",
+        "Fine root MR integrates over soil layers with depth-dependent temperature - requires careful indexing",
+        "Acclimation is optional and experimental - may need to be configurable",
+        "Snow cover affects leaf MR (frac_veg_nosno) - binary flag in Fortran, could be continuous in JAX",
+        "Different PFT types have different tissue components - need PFT-aware masking",
+        "Conversion factor 12.011e-6 converts umol CO2/m2/s to gC/m2/s",
+        "Base rate from Ryan 1991 paper - well-established empirical relationship"
+      ],
+      "testing_strategy": [
+        "Unit test each tissue type MR calculation separately",
+        "Test temperature correction functions with known inputs",
+        "Verify Q10 relationship matches Fortran exactly",
+        "Test acclimation adjustment with and without flag",
+        "Verify fine root integration over soil layers",
+        "Test PFT-specific logic (woody, crop, grass)",
+        "Compare outputs with Fortran for identical inputs",
+        "Test edge cases: zero nitrogen, extreme temperatures, snow cover"
+      ]
+    }
+  }
+}

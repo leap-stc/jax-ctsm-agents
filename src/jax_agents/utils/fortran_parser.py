@@ -8,6 +8,22 @@ import re
 from typing import List, Dict, Any
 
 
+class FortranParser:
+    """Basic Fortran parser for extracting structure."""
+    
+    def __init__(self):
+        """Initialize parser."""
+        pass
+    
+    def extract_subroutines(self, fortran_code: str) -> List[Dict[str, Any]]:
+        """Extract subroutines from code."""
+        return extract_subroutines(fortran_code)
+    
+    def extract_types(self, fortran_code: str) -> List[Dict[str, Any]]:
+        """Extract type definitions from code."""
+        return extract_types(fortran_code)
+
+
 def extract_subroutines(fortran_code: str) -> List[Dict[str, Any]]:
     """
     Extract subroutine names and signatures from Fortran code.

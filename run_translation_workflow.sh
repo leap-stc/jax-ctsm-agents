@@ -33,9 +33,16 @@ cd "$SCRIPT_DIR"
 PROJECT_ROOT="/burg-archive/home/mck2199"
 OUTPUT_DIR="$SCRIPT_DIR/translated_modules"
 REPAIR_DIR="$SCRIPT_DIR/repair_outputs"
+COST_LOG="$SCRIPT_DIR/workflow_costs.log"
 
 # Modules to process (can be overridden with --modules flag)
 DEFAULT_MODULES=("clm_varctl" "SoilStateType" "SoilTemperatureMod")
+
+# Cost tracking variables
+TRANSLATE_COST=0
+TEST_COST=0
+REPAIR_COST=0
+TOTAL_COST=0
 
 # Function to print colored output
 print_header() {
@@ -58,6 +65,40 @@ print_warning() {
 
 print_info() {
     echo -e "${BLUE}→ $1${NC}"
+}
+
+print_cost() {
+    echo -e "${YELLOW}💰 $1${NC}"
+}
+
+# Function to display cost summary
+display_cost_summary() {
+    local phase=$1
+    local cost=$2
+    local input_tokens=$3
+    local output_tokens=$4
+    
+    echo -e "\n${YELLOW}╔════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║     Cost Summary - ${phase}${NC}"
+    echo -e "${YELLOW}╚════════════════════════════════════════╝${NC}"
+    echo -e "${YELLOW}Cost:          \$${cost}${NC}"
+    echo -e "${YELLOW}Input Tokens:  ${input_tokens}${NC}"
+    echo -e "${YELLOW}Output Tokens: ${output_tokens}${NC}"
+    echo -e "${YELLOW}Total Tokens:  $((input_tokens + output_tokens))${NC}\n"
+}
+
+# Function to display final workflow cost summary
+display_final_cost_summary() {
+    echo -e "\n${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║              COMPLETE WORKFLOW COST SUMMARY              ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}\n"
+    
+    printf "${YELLOW}%-30s \$%10s${NC}\n" "Translation:" "$TRANSLATE_COST"
+    printf "${YELLOW}%-30s \$%10s${NC}\n" "Test Generation:" "$TEST_COST"
+    printf "${YELLOW}%-30s \$%10s${NC}\n" "Repair:" "$REPAIR_COST"
+    echo -e "${YELLOW}────────────────────────────────────────────────────────${NC}"
+    printf "${GREEN}%-30s \$%10s${NC}\n" "TOTAL COST:" "$TOTAL_COST"
+    echo -e "\n${CYAN}Cost details saved to: ${COST_LOG}${NC}\n"
 }
 
 # Function to show usage
@@ -151,9 +192,25 @@ run_translation() {
     print_info "Output directory: $OUTPUT_DIR"
     echo
     
-    # Run translate_with_json.py
-    if python examples/translate_with_json.py; then
+    # Initialize cost log
+    echo "=== Translation Workflow Cost Tracking ===" > "$COST_LOG"
+    echo "Date: $(date)" >> "$COST_LOG"
+    echo "" >> "$COST_LOG"
+    
+    # Run translate_with_json.py and capture output
+    local translate_output=$(mktemp)
+    if python examples/translate_with_json.py 2>&1 | tee "$translate_output"; then
         print_success "Translation completed successfully"
+        
+        # Extract cost information from output
+        if grep -q "Total Cost:" "$translate_output"; then
+            TRANSLATE_COST=$(grep "Total Cost:" "$translate_output" | awk '{print $NF}' | tr -d '$')
+            print_cost "Translation cost: \$$TRANSLATE_COST"
+            
+            echo "TRANSLATION PHASE:" >> "$COST_LOG"
+            grep -A 10 "Cost Summary by Module" "$translate_output" >> "$COST_LOG" 2>/dev/null || echo "Cost details in output" >> "$COST_LOG"
+            echo "" >> "$COST_LOG"
+        fi
         
         # List translated modules
         echo
@@ -165,9 +222,12 @@ run_translation() {
                 print_warning "$module - translation may have failed"
             fi
         done
+        
+        rm -f "$translate_output"
         return 0
     else
         print_error "Translation failed"
+        rm -f "$translate_output"
         return 1
     fi
 }
@@ -480,6 +540,13 @@ main() {
                 print_info "Or run: $(basename $0) --repair"
             fi
         fi
+        
+        # Calculate total cost
+        TOTAL_COST=$(echo "$TRANSLATE_COST + $TEST_COST + $REPAIR_COST" | bc -l 2>/dev/null || echo "0")
+        
+        # Display final cost summary
+        display_final_cost_summary
+        
         exit 0
     fi
     
